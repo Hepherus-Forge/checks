@@ -27,10 +27,26 @@ _STYLE_PATTERNS = [
     re.compile(r":\s*\d+(?:\.\d+)?(?:px|rem)\b"),                        # px/rem literal
 ]
 # §8 secret HINTS (presence only — the value is never emitted; the server re-scans too).
+# §8 secret HINTS. B-166 (T799): match secret VALUES, not keys merely NAMED token/secret/password.
+# A secret-named key flags only when assigned a secret-SHAPED literal (>=16 chars, mixed letters+digits) --
+# so "id-token: write", "token: ${{ secrets.X }}", a port number and an empty template line ("TOKEN=") PASS,
+# while a committed real value is CAUGHT. The hint word may be a segment of an underscore name
+# (AWS_SECRET_ACCESS_KEY). Plus standalone credential shapes. The value is never emitted; the server re-scans.
 _SECRET_HINTS = [
-    re.compile(r"(?i)(?:api[_-]?key|secret|token|password|private[_-]?key)\s*[:=]"),
-    re.compile(r"AKIA[0-9A-Z]{16}"),
+    re.compile(
+        r"""(?ix)(?:^|[^A-Za-z0-9])"""
+        r"""(?:api[_-]?key|secret|token|password|passwd|private[_-]?key|access[_-]?key|client[_-]?secret)"""
+        r"""[A-Za-z0-9_]*\s*[:=]\s*(?:bearer\s+)?['"]?"""
+        r"""(?=[^'"\s]{16,})(?=[^'"\s]*[A-Za-z])(?=[^'"\s]*\d)[A-Za-z0-9+/_=.\-]{16,}"""
+    ),
+    re.compile(r"\bAKIA[0-9A-Z]{16}\b"),
     re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----"),
+    re.compile(r"\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{36,}\b"),
+    re.compile(r"\bgithub_pat_[A-Za-z0-9_]{30,}"),
+    re.compile(r"\bsk-[A-Za-z0-9_\-]{20,}\b"),
+    re.compile(r"\bxox[baprs]-[A-Za-z0-9-]{10,}"),
+    re.compile(r"\beyJ[A-Za-z0-9_-]{6,}\.eyJ[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}\b"),
+    re.compile(r"\b[a-zA-Z][a-zA-Z0-9+.\-]*://[^\s:@/]+:[^\s:@/]{3,}@"),
 ]
 _CODE_EXT = (".tsx", ".ts", ".jsx", ".js", ".css", ".scss")
 
