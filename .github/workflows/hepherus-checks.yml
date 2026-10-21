@@ -1,0 +1,164 @@
+# T798 — Hepherus connector-checks REUSABLE workflow.
+#
+# DESTINATION: Hepherus-Forge/checks/.github/workflows/hepherus-checks.yml (a PUBLIC repo Hepherus publishes).
+# The customer's repo NEVER copies this file; it calls it, pinned by commit sha, via the thin caller
+# workflow (../caller/hepherus-checks-caller.yml). The deterministic check logic lives in the committed,
+# reviewable script scripts/build_payload.py in the SAME published repo (pinned together with this file).
+#
+# What it does (Coding_Connector_Scope.md §8 + §6.1; T797_Mocca_Reconciliation §3c Option 1):
+#   - runs the §8 deterministic checks on each push to a non-default branch / each pull request:
+#       hard-coded styling · secrets in changed files · settings NAMES in code vs the template (NEVER .env
+#       VALUES) · vulnerable packages by severity · tests run/passed/failed with failing names
+#   - extracts the §6.1 style-guide STRUCTURE when the declared styling file changed, reading ONLY the
+#     declared styling path (the path allowlist IS the workflow's config; "another path" isn't parsed)
+#   - emits COUNTS + PATHS + the style-guide structure only — never code bodies, never .env values
+#   - requests a GitHub Actions OIDC token (NO stored secret) and POSTs the payload, tied to the commit sha,
+#     to the Hepherus ingest endpoint, which verifies the token server-side (connector_checks_oidc).
+#
+# This file CANNOT be run from the build environment (no GitHub access, T798). Its behaviour on a real runner
+# is INFERRED; the server verifier + done-gate it feeds are LOCAL-TESTED (RAN).
+
+on:
+  workflow_call:
+    inputs:
+      ingest_url:
+        description: "Hepherus ingest endpoint (also the OIDC audience)."
+        required: true
+        type: string
+      styling_path:
+        description: "The ONE declared styling source file (§5.2). The ONLY path the style-guide step reads."
+        required: false
+        default: "styles/tokens.json"
+        type: string
+      settings_template_path:
+        description: "The settings template listing the NAMES the code should read (names only, never .env)."
+        required: false
+        default: ".env.example"
+        type: string
+
+permissions:
+  id-token: write      # required to mint the OIDC token — the no-stored-secret design depends on it
+  contents: read       # read the repo to run the checks; never write
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the head commit (full history for the diff)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Node (tests + npm audit)
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Set up Python (payload assembly)
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Fetch the pinned Hepherus checks script (self-checkout of the published repo)
+        uses: actions/checkout@v4
+        with:
+          repository: Hepherus-Forge/checks
+          ref: main
+          path: .hepherus-checks
+        # T799: makes scripts/build_payload.py (the VERSION PINNED with this workflow) available at
+        # ${{ github.workspace }}/.hepherus-checks. Public repo -> the default token can fetch it.
+        # Hardening (later): pin ref to the workflow's own sha instead of main.
+
+      - name: Determine the base commit and the changed files
+        id: diff
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            BASE="${{ github.event.pull_request.base.sha }}"
+          else
+            BASE="$(git rev-parse HEAD^ 2>/dev/null || git rev-parse HEAD)"
+          fi
+          git diff --name-only "$BASE" "${{ github.sha }}" > changed_files.txt || true
+
+      - name: Run the project's tests (run/passed/failed + failing names)
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo '{"run":0,"passed":0,"failed":0,"failing":[]}' > tests.json
+          if [ -f package.json ]; then
+            npm ci --no-audit --no-fund || true
+            npx --yes jest --json --outputFile=jest.json --ci || true
+            if [ -f jest.json ]; then
+              python - <<'PY'
+import json
+d = json.load(open("jest.json"))
+failing = [t["fullName"] for r in d.get("testResults", []) for t in r.get("assertionResults", [])
+           if t.get("status") == "failed"]
+json.dump({"run": d.get("numTotalTests", 0), "passed": d.get("numPassedTests", 0),
+           "failed": d.get("numFailedTests", 0), "failing": failing[:200]}, open("tests.json", "w"))
+PY
+            fi
+          fi
+
+      - name: Audit packages by severity
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo '{"critical":0,"high":0,"moderate":0,"low":0}' > vuln.json
+          if [ -f package-lock.json ]; then
+            npm audit --json > audit.json 2>/dev/null || true
+            if [ -f audit.json ]; then
+              python - <<'PY'
+import json
+try:
+    v = json.load(open("audit.json")).get("metadata", {}).get("vulnerabilities", {})
+except Exception:
+    v = {}
+json.dump({k: int(v.get(k, 0)) for k in ("critical", "high", "moderate", "low")}, open("vuln.json", "w"))
+PY
+            fi
+          fi
+
+      - name: Assemble the §8 + §6.1 payload (counts + paths + style structure only)
+        shell: bash
+        run: |
+          set -euo pipefail
+          python "${{ github.workspace }}/.hepherus-checks/scripts/build_payload.py" \
+            --changed changed_files.txt \
+            --styling-path "${{ inputs.styling_path }}" \
+            --settings-template "${{ inputs.settings_template_path }}" \
+            --tests tests.json \
+            --vuln vuln.json \
+            --commit-sha "${{ github.sha }}" \
+            --repository "${{ github.repository }}" \
+            --repository-id "${{ github.repository_id }}" \
+            --out payload.json
+        # NOTE: the published repo checks itself out to .hepherus-checks (a pre-step in the real published
+        # file) so build_payload.py is the VERSION PINNED with this workflow, not one from the customer repo.
+
+      - name: Print the assembled payload (transparency; counts/paths/structure only, never values)
+        shell: bash
+        run: |
+          echo "----- payload.json (what will be POSTed) -----"
+          cat payload.json || echo "(payload.json missing)"
+          echo ""
+          echo "----- end payload -----"
+
+      - name: Request the OIDC token and POST the result to Hepherus
+        shell: bash
+        env:
+          INGEST_URL: ${{ inputs.ingest_url }}
+          HEAD_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          # Mint a GitHub Actions OIDC token with our ingest URL as the audience. NO stored secret: GitHub
+          # mints it for this run; the server verifies it against GitHub's public keys.
+          OIDC="$(curl -sS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=$INGEST_URL" \
+            | python -c 'import sys, json; print(json.load(sys.stdin)["value"])')"
+          BODY="$(python -c 'import json, sys; print(json.dumps({"commit_sha": sys.argv[1], "payload": json.load(open("payload.json"))}))' "$HEAD_SHA")"
+          curl -sS -X POST "$INGEST_URL" \
+            -H "Authorization: Bearer $OIDC" \
+            -H "Content-Type: application/json" \
+            --data "$BODY"
