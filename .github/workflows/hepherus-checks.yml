@@ -41,22 +41,24 @@ permissions:
 
 jobs:
   checks:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Check out the head commit (full history for the diff)
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Fetch the pinned Hepherus checks script (self-checkout of the published repo)
+      - name: Fetch the pinned Hepherus checks script (at THIS workflow's own pinned sha)
         uses: actions/checkout@v4
         with:
           repository: Hepherus-Forge/checks
-          ref: main
+          # SECURITY: fetch build_payload.py at the SAME commit the caller pinned this reusable workflow to,
+          # NOT a mutable branch. github.job_workflow_sha is the reusable workflow's own commit sha in a
+          # reusable call (the sha in the OIDC job_workflow_ref our ingest verifies); it falls back to
+          # github.sha when this workflow is run directly (self-test). This makes the pinned sha fully
+          # determine what executes in the customer's CI — the @main fetch was a supply-chain gap.
+          ref: ${{ github.job_workflow_sha || github.sha }}
           path: .hepherus-checks
-        # T799: makes scripts/build_payload.py (the VERSION PINNED with this workflow) available at
-        # ${{ github.workspace }}/.hepherus-checks. Public repo -> the default token can fetch it.
-        # Hardening (later): pin ref to the workflow's own sha instead of main.
 
       - name: Set up Node (tests + npm audit)
         uses: actions/setup-node@v4
