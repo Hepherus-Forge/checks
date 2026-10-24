@@ -44,29 +44,42 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - name: Check out the head commit (full history for the diff)
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0 (pinned to a commit sha)
         with:
           fetch-depth: 0
 
-      - name: Fetch the pinned Hepherus checks script (at THIS workflow's own pinned sha)
-        uses: actions/checkout@v4
+      - name: Resolve THIS workflow's own commit sha (fail closed — never a mutable ref)
+        id: selfsha
+        shell: bash
+        env:
+          # job.workflow_sha = "the commit SHA of the workflow file that defines the current job"; in a
+          # REUSABLE workflow it is THIS (checks) repo's commit, not the caller's. (github.job_workflow_sha
+          # is NOT a documented context — the earlier use of it was a bug that always fell back.)
+          SELF_SHA: ${{ job.workflow_sha }}
+        run: |
+          if [ -z "$SELF_SHA" ]; then
+            echo "::error::job.workflow_sha is empty — refusing to fetch build_payload.py from a mutable ref"
+            exit 1
+          fi
+          echo "sha=$SELF_SHA" >> "$GITHUB_OUTPUT"
+
+      - name: Fetch the pinned Hepherus checks script (at THIS workflow's own commit sha)
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0 (pinned to a commit sha)
         with:
           repository: Hepherus-Forge/checks
-          # SECURITY: fetch build_payload.py at the SAME commit the caller pinned this reusable workflow to,
-          # NOT a mutable branch. github.job_workflow_sha is the reusable workflow's own commit sha in a
-          # reusable call (the sha in the OIDC job_workflow_ref our ingest verifies); it falls back to
-          # github.sha when this workflow is run directly (self-test). This makes the pinned sha fully
-          # determine what executes in the customer's CI — the @main fetch was a supply-chain gap.
-          ref: ${{ github.job_workflow_sha || github.sha }}
+          # SECURITY: fetch build_payload.py at the SAME commit the caller pinned this reusable workflow to
+          # (job.workflow_sha), NOT a mutable branch — so the pinned sha fully determines what runs in the
+          # customer's CI. Fail-closed above if that sha is ever unavailable (never falls back to main/caller).
+          ref: ${{ steps.selfsha.outputs.sha }}
           path: .hepherus-checks
 
       - name: Set up Node (tests + npm audit)
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4.4.0 (pinned to a commit sha)
         with:
           node-version: "20"
 
       - name: Set up Python (payload assembly)
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5.6.0 (pinned to a commit sha)
         with:
           python-version: "3.12"
 
