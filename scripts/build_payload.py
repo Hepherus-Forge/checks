@@ -130,8 +130,11 @@ def style_guide(changed: List[str], styling_path: str) -> Optional[Dict[str, obj
 
 
 def build_payload(changed: List[str], styling_path: str, settings_template: str, tests: Dict,
-                  vuln: Dict, commit_sha: str, repository: str, repository_id: str) -> Dict[str, object]:
-    """Assemble the full payload and compute the conclusion. Pure. Returns the payload dict."""
+                  vuln: Dict, commit_sha: str, repository: str, repository_id: str,
+                  modular: Optional[Dict] = None) -> Dict[str, object]:
+    """Assemble the full payload and compute the conclusion. Pure. `modular` = module_gates.py's block (v1.3 §6.4):
+    status 'fail' fails the conclusion; 'not_supported' is carried as a label (never a pass of those gates).
+    Returns the payload dict."""
     hs_c, hs_p = hardcoded_styling(changed, styling_path)
     se_c, se_p = secrets_in_changed_files(changed)
     sm_c, sm_p = settings_mismatch(changed, settings_template)
@@ -149,13 +152,16 @@ def build_payload(changed: List[str], styling_path: str, settings_template: str,
         "tests": {"run": int(tests.get("run", 0)), "passed": int(tests.get("passed", 0)),
                   "failed": int(tests.get("failed", 0)), "failing": list(tests.get("failing", []))[:200]},
     }
+    if modular is not None:
+        payload["modular"] = modular
     sg = style_guide(changed, styling_path)
     if sg is not None:
         payload["style_guide"] = sg
     c = payload["checks"]
     failed = bool(c["hardcoded_styling"]["count"] or c["secrets_in_changed_files"]["count"]
                   or c["settings_mismatch"]["count"] or payload["tests"]["failed"]
-                  or c["vulnerable_packages"]["critical"] or c["vulnerable_packages"]["high"])
+                  or c["vulnerable_packages"]["critical"] or c["vulnerable_packages"]["high"]
+                  or (modular or {}).get("status") == "fail")
     payload["conclusion"] = "fail" if failed else "pass"
     return payload
 
@@ -171,12 +177,14 @@ def main() -> None:
     ap.add_argument("--repository", required=True)
     ap.add_argument("--repository-id", required=True)
     ap.add_argument("--out", required=True)
+    ap.add_argument("--modular", default=None, help="modular.json from module_gates.py (v1.3 §6.4)")
     a = ap.parse_args()
     changed = [l.strip() for l in open(a.changed, encoding="utf-8").read().splitlines() if l.strip()]
     tests = json.load(open(a.tests, encoding="utf-8"))
     vuln = json.load(open(a.vuln, encoding="utf-8"))
+    modular = json.load(open(a.modular, encoding="utf-8")) if a.modular and os.path.exists(a.modular) else None
     payload = build_payload(changed, a.styling_path, a.settings_template, tests, vuln,
-                            a.commit_sha, a.repository, a.repository_id)
+                            a.commit_sha, a.repository, a.repository_id, modular)
     json.dump(payload, open(a.out, "w", encoding="utf-8"))
 
 
