@@ -94,6 +94,7 @@ jobs:
             BASE="$(git rev-parse HEAD^ 2>/dev/null || git rev-parse HEAD)"
           fi
           git diff --name-only "$BASE" "${{ github.sha }}" > changed_files.txt || true
+          echo "base=$BASE" >> "$GITHUB_OUTPUT"
 
       - name: Run the project's tests (run/passed/failed + failing names)
         shell: bash
@@ -120,6 +121,12 @@ jobs:
             fi
           fi
 
+      - name: Modular gates (Mocca Build Guidelines v1.3 §6.4 — one door per shared job, 800-line limit, no cross-module internals)
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 "${{ github.workspace }}/.hepherus-checks/scripts/module_gates.py"             --base "${{ steps.diff.outputs.base }}"             --styling-path "${{ inputs.styling_path }}"             --out modular.json
+
       - name: Assemble the §8 + §6.1 payload (counts + paths + style structure only)
         shell: bash
         run: |
@@ -129,7 +136,7 @@ jobs:
             --styling-path "${{ inputs.styling_path }}" \
             --settings-template "${{ inputs.settings_template_path }}" \
             --tests tests.json \
-            --vuln vuln.json \
+            --vuln vuln.json             --modular modular.json \
             --commit-sha "${{ github.sha }}" \
             --repository "${{ github.repository }}" \
             --repository-id "${{ github.repository_id }}" \
@@ -163,3 +170,10 @@ jobs:
           cat response.txt || true
           echo ""
           echo "----- end ingest response -----"
+
+      # v1.3 (D-2747): the job itself FAILS on a failing result, so GitHub's REQUIRED status check (§6.6) refuses
+      # the merge. Before this step the job always succeeded (the result only blocked Mocca's "done" server-side).
+      - name: Fail the check when the result is "fail" (blocks the merge)
+        shell: bash
+        run: |
+          python3 -c 'import json,sys; p=json.load(open("payload.json")); m=p.get("modular",{}); print("conclusion:", p.get("conclusion"), "| modular:", m.get("status"), m.get("reason","")); sys.exit(1 if p.get("conclusion")=="fail" else 0)'
