@@ -34,6 +34,11 @@ on:
         required: false
         default: ".env.example"
         type: string
+      binding_code:
+        description: "S12 R5 - the per-project binding code Hepherus issued at setup (an identifier, not a credential). Sent with the OIDC token; binds the project on its first check."
+        required: false
+        default: ""
+        type: string
 
 permissions:
   id-token: write      # required to mint the OIDC token — the no-stored-secret design depends on it
@@ -155,12 +160,13 @@ jobs:
         env:
           INGEST_URL: ${{ inputs.ingest_url }}
           HEAD_SHA: ${{ github.sha }}
+          BINDING_CODE: ${{ inputs.binding_code }}
         run: |
           set -euo pipefail
           OIDC="$(curl -sS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
             "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=$INGEST_URL" \
             | python3 -c 'import sys, json; print(json.load(sys.stdin)["value"])')"
-          BODY="$(python3 -c 'import json, sys; print(json.dumps({"commit_sha": sys.argv[1], "payload": json.load(open("payload.json"))}))' "$HEAD_SHA")"
+          BODY="$(python3 -c 'import json, sys; print(json.dumps({"commit_sha": sys.argv[1], "binding_code": sys.argv[2], "payload": json.load(open("payload.json"))}))' "$HEAD_SHA" "$BINDING_CODE")"
           echo "POSTing to $INGEST_URL (response below):"
           curl -sS -o response.txt -w "HTTP %{http_code}\n" -X POST "$INGEST_URL" \
             -H "Authorization: Bearer $OIDC" \
